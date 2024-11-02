@@ -15,6 +15,7 @@ use toml_edit::{value, Array, ArrayOfTables, InlineTable, Item, Table, Value};
 use url::Url;
 
 pub use crate::lock::requirements_txt::RequirementsTxtExport;
+pub use crate::lock::target::InstallTarget;
 pub use crate::lock::tree::TreeDisplay;
 use crate::requires_python::SimplifiedMarkerTree;
 use crate::resolution::{AnnotatedDist, ResolutionGraphNode};
@@ -44,9 +45,10 @@ use uv_pypi_types::{
 };
 use uv_types::{BuildContext, HashStrategy};
 use uv_workspace::dependency_groups::DependencyGroupError;
-use uv_workspace::{InstallTarget, Workspace};
+use uv_workspace::Workspace;
 
 mod requirements_txt;
+mod target;
 mod tree;
 
 /// The current version of the lockfile format.
@@ -544,6 +546,16 @@ impl Lock {
         &self.manifest.members
     }
 
+    /// Return the workspace root used to generate this lock.
+    pub fn root(&self) -> Option<&Package> {
+        self.packages.iter().find(|package| {
+            let (Source::Editable(path) | Source::Virtual(path)) = &package.id.source else {
+                return false;
+            };
+            path == Path::new("")
+        })
+    }
+
     /// Returns the supported environments that were used to generate this
     /// lock.
     ///
@@ -576,7 +588,7 @@ impl Lock {
     /// Convert the [`Lock`] to a [`Resolution`] using the given marker environment, tags, and root.
     pub fn to_resolution(
         &self,
-        project: InstallTarget<'_>,
+        target: InstallTarget<'_>,
         marker_env: &ResolverMarkerEnvironment,
         tags: &Tags,
         extras: &ExtrasSpecification,
@@ -588,7 +600,7 @@ impl Lock {
         let mut seen = FxHashSet::default();
 
         // Add the workspace packages to the queue.
-        for root_name in project.packages() {
+        for root_name in target.packages() {
             let root = self
                 .find_by_name(root_name)
                 .map_err(|_| LockErrorKind::MultipleRootPackages {
@@ -638,7 +650,7 @@ impl Lock {
 
         // Add any dependency groups that are exclusive to the workspace root (e.g., dev
         // dependencies in (legacy) non-project workspace roots).
-        let groups = project
+        let groups = target
             .groups()
             .map_err(|err| LockErrorKind::DependencyGroup { err })?;
         for group in dev.iter() {
@@ -688,13 +700,13 @@ impl Lock {
             }
             if install_options.include_package(
                 &dist.id.name,
-                project.project_name(),
+                target.project_name(),
                 &self.manifest.members,
             ) {
                 map.insert(
                     dist.id.name.clone(),
                     ResolvedDist::Installable(dist.to_dist(
-                        project.workspace().install_path(),
+                        target.workspace().install_path(),
                         TagPolicy::Required(tags),
                         build_options,
                     )?),
@@ -2068,7 +2080,7 @@ impl Package {
                 }
             }
             if !dependency_groups.is_empty() {
-                table.insert("dependency-groups", Item::Table(dependency_groups));
+                table.insert("dev-dependencies", Item::Table(dependency_groups));
             }
         }
 
@@ -2131,7 +2143,7 @@ impl Package {
                     dependency_groups.insert(extra.as_ref(), value(deps));
                 }
                 if !dependency_groups.is_empty() {
-                    metadata_table.insert("dependency-groups", Item::Table(dependency_groups));
+                    metadata_table.insert("requires-dev", Item::Table(dependency_groups));
                 }
             }
 
@@ -2241,7 +2253,7 @@ struct PackageWire {
     dependencies: Vec<DependencyWire>,
     #[serde(default)]
     optional_dependencies: BTreeMap<ExtraName, Vec<DependencyWire>>,
-    #[serde(default, alias = "dev-dependencies")]
+    #[serde(default, rename = "dev-dependencies", alias = "dependency-groups")]
     dependency_groups: BTreeMap<GroupName, Vec<DependencyWire>>,
 }
 
@@ -2250,7 +2262,7 @@ struct PackageWire {
 struct PackageMetadata {
     #[serde(default)]
     requires_dist: BTreeSet<Requirement>,
-    #[serde(default, alias = "requires-dev")]
+    #[serde(default, rename = "requires-dev", alias = "dependency-groups")]
     dependency_groups: BTreeMap<GroupName, BTreeSet<Requirement>>,
 }
 
@@ -3152,9 +3164,15 @@ fn locked_git_url(git_dist: &GitSourceDist) -> Url {
     url.set_query(None);
 
     // Put the subdirectory in the query.
-    if let Some(subdirectory) = git_dist.subdirectory.as_deref().and_then(Path::to_str) {
+    if let Some(subdirectory) = git_dist
+        .subdirectory
+        .as_deref()
+        .map(PortablePath::from)
+        .as_ref()
+        .map(PortablePath::to_string)
+    {
         url.query_pairs_mut()
-            .append_pair("subdirectory", subdirectory);
+            .append_pair("subdirectory", &subdirectory);
     }
 
     // Put the requested reference in the query.

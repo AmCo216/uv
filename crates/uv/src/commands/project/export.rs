@@ -13,13 +13,13 @@ use uv_configuration::{
 };
 use uv_normalize::PackageName;
 use uv_python::{PythonDownloads, PythonPreference, PythonRequest};
-use uv_resolver::RequirementsTxtExport;
+use uv_resolver::{InstallTarget, RequirementsTxtExport};
 use uv_workspace::{DiscoveryOptions, MemberDiscovery, VirtualProject, Workspace};
 
 use crate::commands::pip::loggers::DefaultResolveLogger;
 use crate::commands::project::lock::{do_safe_lock, LockMode};
 use crate::commands::project::{
-    default_dependency_groups, validate_dependency_groups, ProjectError, ProjectInterpreter,
+    default_dependency_groups, DependencyGroupsTarget, ProjectError, ProjectInterpreter,
 };
 use crate::commands::{diagnostics, pip, ExitStatus, OutputWriter, SharedState};
 use crate::printer::Printer;
@@ -30,6 +30,7 @@ use crate::settings::ResolverSettings;
 pub(crate) async fn export(
     project_dir: &Path,
     format: ExportFormat,
+    all_packages: bool,
     package: Option<PackageName>,
     hashes: bool,
     install_options: InstallOptions,
@@ -52,14 +53,7 @@ pub(crate) async fn export(
     printer: Printer,
 ) -> Result<ExitStatus> {
     // Identify the project.
-    let project = if let Some(package) = package {
-        VirtualProject::Project(
-            Workspace::discover(project_dir, &DiscoveryOptions::default())
-                .await?
-                .with_current_project(package.clone())
-                .with_context(|| format!("Package `{package}` not found in workspace"))?,
-        )
-    } else if frozen {
+    let project = if frozen {
         VirtualProject::discover(
             project_dir,
             &DiscoveryOptions {
@@ -68,17 +62,33 @@ pub(crate) async fn export(
             },
         )
         .await?
+    } else if let Some(package) = package.as_ref() {
+        VirtualProject::Project(
+            Workspace::discover(project_dir, &DiscoveryOptions::default())
+                .await?
+                .with_current_project(package.clone())
+                .with_context(|| format!("Package `{package}` not found in workspace"))?,
+        )
     } else {
         VirtualProject::discover(project_dir, &DiscoveryOptions::default()).await?
     };
 
-    // Determine the default groups to include.
-    validate_dependency_groups(project.pyproject_toml(), &dev)?;
-    let defaults = default_dependency_groups(project.pyproject_toml())?;
-
-    let VirtualProject::Project(project) = project else {
+    let VirtualProject::Project(project) = &project else {
         return Err(anyhow::anyhow!("Legacy non-project roots are not supported in `uv export`; add a `[project]` table to your `pyproject.toml` to enable exports"));
     };
+
+    // Validate that any referenced dependency groups are defined in the workspace.
+    if !frozen {
+        let target = if all_packages {
+            DependencyGroupsTarget::Workspace(project.workspace())
+        } else {
+            DependencyGroupsTarget::Project(project)
+        };
+        target.validate(&dev)?;
+    }
+
+    // Determine the default groups to include.
+    let defaults = default_dependency_groups(project.current_project().pyproject_toml())?;
 
     // Determine the lock mode.
     let interpreter;
@@ -147,6 +157,23 @@ pub(crate) async fn export(
         Err(err) => return Err(err.into()),
     };
 
+    // Identify the installation target.
+    let target = if all_packages {
+        InstallTarget::Workspace {
+            workspace: project.workspace(),
+            lock: &lock,
+        }
+    } else {
+        InstallTarget::Project {
+            workspace: project.workspace(),
+            // If `--frozen --package` is specified, and only the root `pyproject.toml` was
+            // discovered, the child won't be present in the workspace; but we _know_ that
+            // we want to install it, so we override the package name.
+            name: package.as_ref().unwrap_or(project.project_name()),
+            lock: &lock,
+        }
+    };
+
     // Write the resolved dependencies to the output channel.
     let mut writer = OutputWriter::new(!quiet || output_file.is_none(), output_file.as_deref());
 
@@ -154,8 +181,7 @@ pub(crate) async fn export(
     match format {
         ExportFormat::RequirementsTxt => {
             let export = RequirementsTxtExport::from_lock(
-                &lock,
-                project.project_name(),
+                target,
                 &extras,
                 &dev.with_defaults(defaults),
                 editable,

@@ -8,7 +8,7 @@ use url::Url;
 use uv_cache::{CacheArgs, Refresh};
 use uv_cli::{
     options::{flag, resolver_installer_options, resolver_options},
-    AuthorFrom, BuildArgs, ExportArgs, PublishArgs, ToolUpgradeArgs,
+    AuthorFrom, BuildArgs, ExportArgs, PublishArgs, PythonDirArgs, ToolUpgradeArgs,
 };
 use uv_cli::{
     AddArgs, ColorChoice, ExternalCommand, GlobalArgs, InitArgs, ListFormat, LockArgs, Maybe,
@@ -24,7 +24,7 @@ use uv_configuration::{
     NoBinary, NoBuild, PreviewMode, ProjectBuildBackend, Reinstall, SourceStrategy, TargetTriple,
     TrustedHost, TrustedPublishing, Upgrade, VersionControlSystem,
 };
-use uv_distribution_types::{DependencyMetadata, Index, IndexLocations};
+use uv_distribution_types::{DependencyMetadata, Index, IndexLocations, IndexUrl};
 use uv_install_wheel::linker::LinkMode;
 use uv_normalize::PackageName;
 use uv_pep508::{ExtraName, RequirementOrigin};
@@ -202,7 +202,7 @@ impl InitSettings {
             (_, _, _) => unreachable!("`app`, `lib`, and `script` are mutually exclusive"),
         };
 
-        let package = flag(package || build_backend.is_some() || r#virtual, no_package)
+        let package = flag(package || build_backend.is_some(), no_package || r#virtual)
             .unwrap_or(kind.packaged_by_default());
 
         Self {
@@ -235,6 +235,7 @@ pub(crate) struct RunSettings {
     pub(crate) with_requirements: Vec<PathBuf>,
     pub(crate) isolated: bool,
     pub(crate) show_resolution: bool,
+    pub(crate) all_packages: bool,
     pub(crate) package: Option<PackageName>,
     pub(crate) no_project: bool,
     pub(crate) no_sync: bool,
@@ -271,6 +272,7 @@ impl RunSettings {
             installer,
             build,
             refresh,
+            all_packages,
             package,
             no_project,
             python,
@@ -296,6 +298,7 @@ impl RunSettings {
                 .collect(),
             isolated,
             show_resolution,
+            all_packages,
             package,
             no_project,
             no_sync,
@@ -597,6 +600,23 @@ impl PythonListSettings {
     }
 }
 
+/// The resolved settings to use for a `python dir` invocation.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone)]
+pub(crate) struct PythonDirSettings {
+    pub(crate) bin: bool,
+}
+
+impl PythonDirSettings {
+    /// Resolve the [`PythonDirSettings`] from the CLI and filesystem configuration.
+    #[allow(clippy::needless_pass_by_value)]
+    pub(crate) fn resolve(args: PythonDirArgs, _filesystem: Option<FilesystemOptions>) -> Self {
+        let PythonDirArgs { bin } = args;
+
+        Self { bin }
+    }
+}
+
 /// The resolved settings to use for a `python install` invocation.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
@@ -703,6 +723,7 @@ pub(crate) struct SyncSettings {
     pub(crate) editable: EditableMode,
     pub(crate) install_options: InstallOptions,
     pub(crate) modifications: Modifications,
+    pub(crate) all_packages: bool,
     pub(crate) package: Option<PackageName>,
     pub(crate) python: Option<String>,
     pub(crate) refresh: Refresh,
@@ -734,6 +755,7 @@ impl SyncSettings {
             installer,
             build,
             refresh,
+            all_packages,
             package,
             python,
         } = args;
@@ -764,6 +786,7 @@ impl SyncSettings {
             } else {
                 Modifications::Sufficient
             },
+            all_packages,
             package,
             python: python.and_then(Maybe::into_option),
             refresh: Refresh::from(refresh),
@@ -1071,6 +1094,7 @@ impl TreeSettings {
 #[derive(Debug, Clone)]
 pub(crate) struct ExportSettings {
     pub(crate) format: ExportFormat,
+    pub(crate) all_packages: bool,
     pub(crate) package: Option<PackageName>,
     pub(crate) extras: ExtrasSpecification,
     pub(crate) dev: DevGroupsSpecification,
@@ -1092,6 +1116,7 @@ impl ExportSettings {
     pub(crate) fn resolve(args: ExportArgs, filesystem: Option<FilesystemOptions>) -> Self {
         let ExportArgs {
             format,
+            all_packages,
             package,
             extra,
             all_extras,
@@ -1120,8 +1145,9 @@ impl ExportSettings {
         } = args;
 
         Self {
-            package,
             format,
+            all_packages,
+            package,
             extras: ExtrasSpecification::from_args(
                 flag(all_extras, no_all_extras).unwrap_or_default(),
                 extra.unwrap_or_default(),
@@ -1780,7 +1806,7 @@ impl PipCheckSettings {
 pub(crate) struct BuildSettings {
     pub(crate) src: Option<PathBuf>,
     pub(crate) package: Option<PackageName>,
-    pub(crate) all: bool,
+    pub(crate) all_packages: bool,
     pub(crate) out_dir: Option<PathBuf>,
     pub(crate) sdist: bool,
     pub(crate) wheel: bool,
@@ -1799,7 +1825,7 @@ impl BuildSettings {
             src,
             out_dir,
             package,
-            all,
+            all_packages,
             sdist,
             wheel,
             build_constraint,
@@ -1818,7 +1844,7 @@ impl BuildSettings {
         Self {
             src,
             package,
-            all,
+            all_packages,
             out_dir,
             sdist,
             wheel,
@@ -2597,6 +2623,7 @@ pub(crate) struct PublishSettings {
     pub(crate) trusted_publishing: TrustedPublishing,
     pub(crate) keyring_provider: KeyringProviderType,
     pub(crate) allow_insecure_host: Vec<TrustedHost>,
+    pub(crate) check_url: Option<IndexUrl>,
 }
 
 impl PublishSettings {
@@ -2650,6 +2677,7 @@ impl PublishSettings {
                 })
                 .combine(allow_insecure_host)
                 .unwrap_or_default(),
+            check_url: args.check_url,
         }
     }
 }

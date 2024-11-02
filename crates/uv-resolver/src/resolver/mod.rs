@@ -13,7 +13,7 @@ use dashmap::DashMap;
 use either::Either;
 use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
-use pubgrub::{Incompatibility, Range, State};
+use pubgrub::{Incompatibility, Range, Ranges, State};
 use rustc_hash::{FxHashMap, FxHashSet};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::oneshot;
@@ -34,7 +34,7 @@ use uv_distribution_types::{
 };
 use uv_git::GitResolver;
 use uv_normalize::{ExtraName, GroupName, PackageName};
-use uv_pep440::{Version, MIN_VERSION};
+use uv_pep440::{release_specifiers_to_ranges, Version, MIN_VERSION};
 use uv_pep508::MarkerTree;
 use uv_platform_tags::Tags;
 use uv_pypi_types::{Requirement, ResolutionMetadata, VerbatimParsedUrl};
@@ -51,7 +51,7 @@ use crate::pins::FilePins;
 use crate::preferences::Preferences;
 use crate::pubgrub::{
     PubGrubDependency, PubGrubDistribution, PubGrubPackage, PubGrubPackageInner, PubGrubPriorities,
-    PubGrubPython, PubGrubSpecifier,
+    PubGrubPython,
 };
 use crate::python_requirement::PythonRequirement;
 use crate::resolution::ResolutionGraph;
@@ -316,7 +316,9 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                     fork_preferences
                         .iter()
                         .rev()
-                        .map(|fork_preference| state.clone().with_markers(fork_preference.clone()))
+                        .filter_map(|fork_preference| {
+                            state.clone().with_markers(fork_preference.clone())
+                        })
                         .collect()
                 }
             } else {
@@ -465,7 +467,7 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                 let version = match version {
                     ResolverVersion::Available(version) => version,
                     ResolverVersion::Unavailable(version, reason) => {
-                        state.add_unavailable_version(version, reason)?;
+                        state.add_unavailable_version(version, reason);
                         continue;
                     }
                 };
@@ -693,14 +695,17 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
         forks
             .into_iter()
             .enumerate()
-            .map(move |(i, fork)| {
+            .filter_map(move |(i, fork)| {
                 let is_last = i == forks_len - 1;
                 let forked_state = cur_state.take().unwrap();
                 if !is_last {
                     cur_state = Some(forked_state.clone());
                 }
 
-                let mut forked_state = forked_state.with_markers(fork.markers);
+                let markers = fork.markers.clone();
+                Some((fork, forked_state.with_markers(markers)?))
+            })
+            .map(move |(fork, mut forked_state)| {
                 forked_state.add_package_version_dependencies(
                     for_package,
                     version,
@@ -1241,7 +1246,7 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                 requirements
                     .iter()
                     .flat_map(|requirement| PubGrubDependency::from_requirement(requirement, None))
-                    .collect::<Result<Vec<_>, _>>()?
+                    .collect()
             }
             PubGrubPackageInner::Package {
                 name,
@@ -1349,12 +1354,12 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                     python_requirement,
                 );
 
-                let mut dependencies = requirements
+                let mut dependencies: Vec<_> = requirements
                     .iter()
                     .flat_map(|requirement| {
                         PubGrubDependency::from_requirement(requirement, Some(name))
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect();
 
                 // If a package has metadata for an enabled dependency group,
                 // add a dependency from it to the same package with the group
@@ -1610,10 +1615,9 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                                         extras: constraint.extras.clone(),
                                         source: constraint.source.clone(),
                                         origin: constraint.origin.clone(),
-                                        marker
+                                        marker,
                                     })
                                 }
-
                             } else {
                                 let requires_python = python_requirement.target();
                                 let python_marker = python_requirement.to_marker_tree();
@@ -1644,7 +1648,7 @@ impl<InstalledPackages: InstalledPackagesProvider> ResolverState<InstalledPackag
                                         extras: constraint.extras.clone(),
                                         source: constraint.source.clone(),
                                         origin: constraint.origin.clone(),
-                                        marker
+                                        marker,
                                     })
                                 }
                             };
@@ -2223,12 +2227,10 @@ impl ForkState {
                             .map(|specifier| {
                                 Locals::map(local, specifier)
                                     .map_err(ResolveError::InvalidVersion)
-                                    .and_then(|specifier| {
-                                        Ok(PubGrubSpecifier::from_pep440_specifier(&specifier)?)
-                                    })
+                                    .map(Ranges::from)
                             })
                             .fold_ok(Range::full(), |range, specifier| {
-                                range.intersection(&specifier.into())
+                                range.intersection(&specifier)
                             })?;
 
                         // Add the local version.
@@ -2286,11 +2288,7 @@ impl ForkState {
         Ok(())
     }
 
-    fn add_unavailable_version(
-        &mut self,
-        version: Version,
-        reason: UnavailableVersion,
-    ) -> Result<(), ResolveError> {
+    fn add_unavailable_version(&mut self, version: Version, reason: UnavailableVersion) {
         // Incompatible requires-python versions are special in that we track
         // them as incompatible dependencies instead of marking the package version
         // as unavailable directly.
@@ -2299,9 +2297,6 @@ impl ForkState {
             | IncompatibleDist::Wheel(IncompatibleWheel::RequiresPython(requires_python, kind)),
         ) = reason
         {
-            let python_version: Range<Version> =
-                PubGrubSpecifier::from_release_specifiers(&requires_python)?.into();
-
             let package = &self.next;
             self.pubgrub
                 .add_incompatibility(Incompatibility::from_dependency(
@@ -2312,13 +2307,13 @@ impl ForkState {
                             PythonRequirementKind::Installed => PubGrubPython::Installed,
                             PythonRequirementKind::Target => PubGrubPython::Target,
                         })),
-                        python_version.clone(),
+                        release_specifiers_to_ranges(requires_python),
                     ),
                 ));
             self.pubgrub
                 .partial_solution
                 .add_decision(self.next.clone(), version);
-            return Ok(());
+            return;
         };
         self.pubgrub
             .add_incompatibility(Incompatibility::custom_version(
@@ -2326,13 +2321,20 @@ impl ForkState {
                 version.clone(),
                 UnavailableReason::Version(reason),
             ));
-        Ok(())
     }
 
     /// Subset the current markers with the new markers and update the python requirements fields
     /// accordingly.
-    fn with_markers(mut self, markers: MarkerTree) -> Self {
+    fn with_markers(mut self, markers: MarkerTree) -> Option<Self> {
         let combined_markers = self.markers.and(markers);
+        let python_marker = self.python_requirement.to_marker_tree();
+        if combined_markers.is_disjoint(&python_marker) {
+            debug!(
+                "Skipping split {combined_markers:?} \
+                 because of Python requirement {python_marker:?}",
+            );
+            return None;
+        }
 
         // If the fork contains a narrowed Python requirement, apply it.
         let python_requirement = marker::requires_python(&combined_markers)
@@ -2346,7 +2348,7 @@ impl ForkState {
         }
 
         self.markers = ResolverMarkers::Fork(combined_markers);
-        self
+        Some(self)
     }
 
     fn into_resolution(self) -> Resolution {

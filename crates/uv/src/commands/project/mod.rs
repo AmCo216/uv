@@ -38,7 +38,7 @@ use uv_types::{BuildIsolation, EmptyInstalledPackages, HashStrategy};
 use uv_warnings::{warn_user, warn_user_once};
 use uv_workspace::dependency_groups::DependencyGroupError;
 use uv_workspace::pyproject::PyProjectToml;
-use uv_workspace::Workspace;
+use uv_workspace::{ProjectWorkspace, Workspace};
 
 use crate::commands::pip::loggers::{InstallLogger, ResolveLogger};
 use crate::commands::pip::operations::{Changelog, Modifications};
@@ -126,7 +126,10 @@ pub(crate) enum ProjectError {
     ),
 
     #[error("Group `{0}` is not defined in the project's `dependency-group` table")]
-    MissingGroup(GroupName),
+    MissingGroupProject(GroupName),
+
+    #[error("Group `{0}` is not defined in any project's `dependency-group` table")]
+    MissingGroupWorkspace(GroupName),
 
     #[error("Default group `{0}` (from `tool.uv.default-groups`) is not defined in the project's `dependency-group` table")]
     MissingDefaultGroup(GroupName),
@@ -177,9 +180,6 @@ pub(crate) enum ProjectError {
     Operation(#[from] pip::operations::Error),
 
     #[error(transparent)]
-    RequiresPython(#[from] uv_resolver::RequiresPythonError),
-
-    #[error(transparent)]
     Interpreter(#[from] uv_python::InterpreterError),
 
     #[error(transparent)]
@@ -208,9 +208,7 @@ pub(crate) enum ProjectError {
 ///
 /// For a [`Workspace`] with multiple packages, the `Requires-Python` bound is the union of the
 /// `Requires-Python` bounds of all the packages.
-pub(crate) fn find_requires_python(
-    workspace: &Workspace,
-) -> Result<Option<RequiresPython>, uv_resolver::RequiresPythonError> {
+pub(crate) fn find_requires_python(workspace: &Workspace) -> Option<RequiresPython> {
     RequiresPython::intersection(workspace.packages().values().filter_map(|member| {
         member
             .pyproject_toml()
@@ -341,7 +339,7 @@ impl WorkspacePython {
         python_request: Option<PythonRequest>,
         workspace: &Workspace,
     ) -> Result<Self, ProjectError> {
-        let requires_python = find_requires_python(workspace)?;
+        let requires_python = find_requires_python(workspace);
 
         let (source, python_request) = if let Some(request) = python_request {
             // (1) Explicit request from user
@@ -1368,26 +1366,46 @@ pub(crate) async fn script_python_requirement(
     ))
 }
 
-/// Validate the dependency groups requested by the [`DevGroupsSpecification`].
-#[allow(clippy::result_large_err)]
-pub(crate) fn validate_dependency_groups(
-    pyproject_toml: &PyProjectToml,
-    dev: &DevGroupsSpecification,
-) -> Result<(), ProjectError> {
-    for group in dev
-        .groups()
-        .into_iter()
-        .flat_map(GroupsSpecification::names)
-    {
-        if !pyproject_toml
-            .dependency_groups
-            .as_ref()
-            .is_some_and(|groups| groups.contains_key(group))
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum DependencyGroupsTarget<'env> {
+    /// The dependency groups can be defined in any workspace member.
+    Workspace(&'env Workspace),
+    /// The dependency groups must be defined in the target project.
+    Project(&'env ProjectWorkspace),
+}
+
+impl DependencyGroupsTarget<'_> {
+    /// Validate the dependency groups requested by the [`DevGroupsSpecification`].
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn validate(self, dev: &DevGroupsSpecification) -> Result<(), ProjectError> {
+        for group in dev
+            .groups()
+            .into_iter()
+            .flat_map(GroupsSpecification::names)
         {
-            return Err(ProjectError::MissingGroup(group.clone()));
+            match self {
+                Self::Workspace(workspace) => {
+                    // The group must be defined in the workspace.
+                    if !workspace.groups().contains(group) {
+                        return Err(ProjectError::MissingGroupWorkspace(group.clone()));
+                    }
+                }
+                Self::Project(project) => {
+                    // The group must be defined in the target project.
+                    if !project
+                        .current_project()
+                        .pyproject_toml()
+                        .dependency_groups
+                        .as_ref()
+                        .is_some_and(|groups| groups.contains_key(group))
+                    {
+                        return Err(ProjectError::MissingGroupProject(group.clone()));
+                    }
+                }
+            }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Returns the default dependency groups from the [`PyProjectToml`].

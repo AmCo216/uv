@@ -103,7 +103,7 @@ All checks passed!
 See the [project documentation](https://docs.astral.sh/uv/guides/projects/) to get started.
 
 uv also supports building and publishing projects, even if they're not managed with uv. See the
-[publish guide](./guides/publish.md) to learn more.
+[publish guide](https://docs.astral.sh/uv/guides/publish/) to learn more.
 
 ### Tool management
 
@@ -285,8 +285,8 @@ for Windows support.
 uv is licensed under either of
 
 - Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
-  https://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or https://opensource.org/licenses/MIT)
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
 
 at your option.
 

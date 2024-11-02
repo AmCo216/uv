@@ -643,8 +643,8 @@ async fn run(mut cli: Cli) -> Result<ExitStatus> {
             commands::pip_tree(
                 args.show_version_specifiers,
                 args.depth,
-                args.prune,
-                args.package,
+                &args.prune,
+                &args.package,
                 args.no_dedupe,
                 args.invert,
                 args.shared.strict,
@@ -712,7 +712,7 @@ async fn run(mut cli: Cli) -> Result<ExitStatus> {
                 &project_dir,
                 args.src,
                 args.package,
-                args.all,
+                args.all_packages,
                 args.out_dir,
                 args.sdist,
                 args.wheel,
@@ -1057,6 +1057,7 @@ async fn run(mut cli: Cli) -> Result<ExitStatus> {
                 globals.native_tls,
                 globals.connectivity,
                 cli.top_level.no_config,
+                globals.preview,
                 printer,
             )
             .await
@@ -1111,9 +1112,13 @@ async fn run(mut cli: Cli) -> Result<ExitStatus> {
             .await
         }
         Commands::Python(PythonNamespace {
-            command: PythonCommand::Dir,
+            command: PythonCommand::Dir(args),
         }) => {
-            commands::python_dir()?;
+            // Resolve the settings from the command-line arguments and workspace configuration.
+            let args = settings::PythonDirSettings::resolve(args, filesystem);
+            show_settings!(args);
+
+            commands::python_dir(args.bin)?;
             Ok(ExitStatus::Success)
         }
         Commands::Publish(args) => {
@@ -1132,6 +1137,7 @@ async fn run(mut cli: Cli) -> Result<ExitStatus> {
                 trusted_publishing,
                 keyring_provider,
                 allow_insecure_host,
+                check_url,
             } = PublishSettings::resolve(args, filesystem);
 
             commands::publish(
@@ -1142,6 +1148,8 @@ async fn run(mut cli: Cli) -> Result<ExitStatus> {
                 allow_insecure_host,
                 username,
                 password,
+                check_url,
+                &cache,
                 globals.connectivity,
                 globals.native_tls,
                 printer,
@@ -1285,6 +1293,7 @@ async fn run_project(
                 args.frozen,
                 args.no_sync,
                 args.isolated,
+                args.all_packages,
                 args.package,
                 args.no_project,
                 no_config,
@@ -1319,6 +1328,7 @@ async fn run_project(
                 project_dir,
                 args.locked,
                 args.frozen,
+                args.all_packages,
                 args.package,
                 args.extras,
                 args.dev,
@@ -1500,6 +1510,7 @@ async fn run_project(
             commands::export(
                 project_dir,
                 args.format,
+                args.all_packages,
                 args.package,
                 args.hashes,
                 args.install_options,

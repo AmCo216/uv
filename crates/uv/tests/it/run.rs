@@ -806,6 +806,169 @@ fn run_with() -> Result<()> {
     Ok(())
 }
 
+/// Sync all members in a workspace.
+#[test]
+fn run_in_workspace() -> Result<()> {
+    let context = TestContext::new("3.12");
+
+    let pyproject_toml = context.temp_dir.child("pyproject.toml");
+    pyproject_toml.write_str(
+        r#"
+        [project]
+        name = "project"
+        version = "0.1.0"
+        requires-python = ">=3.12"
+        dependencies = ["anyio>3"]
+
+        [build-system]
+        requires = ["setuptools>=42"]
+        build-backend = "setuptools.build_meta"
+
+        [tool.uv.workspace]
+        members = ["child1", "child2"]
+
+        [tool.uv.sources]
+        child1 = { workspace = true }
+        child2 = { workspace = true }
+        "#,
+    )?;
+    context
+        .temp_dir
+        .child("src")
+        .child("project")
+        .child("__init__.py")
+        .touch()?;
+
+    let child1 = context.temp_dir.child("child1");
+    child1.child("pyproject.toml").write_str(
+        r#"
+        [project]
+        name = "child1"
+        version = "0.1.0"
+        requires-python = ">=3.12"
+        dependencies = ["iniconfig>1"]
+
+        [build-system]
+        requires = ["setuptools>=42"]
+        build-backend = "setuptools.build_meta"
+        "#,
+    )?;
+    child1
+        .child("src")
+        .child("child1")
+        .child("__init__.py")
+        .touch()?;
+
+    let child2 = context.temp_dir.child("child2");
+    child2.child("pyproject.toml").write_str(
+        r#"
+        [project]
+        name = "child2"
+        version = "0.1.0"
+        requires-python = ">=3.12"
+        dependencies = ["typing-extensions>4"]
+
+        [build-system]
+        requires = ["setuptools>=42"]
+        build-backend = "setuptools.build_meta"
+        "#,
+    )?;
+    child2
+        .child("src")
+        .child("child2")
+        .child("__init__.py")
+        .touch()?;
+
+    let test_script = context.temp_dir.child("main.py");
+    test_script.write_str(indoc! { r"
+        import anyio
+       "
+    })?;
+
+    uv_snapshot!(context.filters(), context.run().arg("main.py"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 8 packages in [TIME]
+    Prepared 4 packages in [TIME]
+    Installed 4 packages in [TIME]
+     + anyio==4.3.0
+     + idna==3.6
+     + project==0.1.0 (from file://[TEMP_DIR]/)
+     + sniffio==1.3.1
+    "###);
+
+    let test_script = context.temp_dir.child("main.py");
+    test_script.write_str(indoc! { r"
+        import iniconfig
+       "
+    })?;
+
+    uv_snapshot!(context.filters(), context.run().arg("main.py"), @r###"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 8 packages in [TIME]
+    Audited 4 packages in [TIME]
+    Traceback (most recent call last):
+      File "[TEMP_DIR]/main.py", line 1, in <module>
+        import iniconfig
+    ModuleNotFoundError: No module named 'iniconfig'
+    "###);
+
+    uv_snapshot!(context.filters(), context.run().arg("--package").arg("child1").arg("main.py"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 8 packages in [TIME]
+    Prepared 2 packages in [TIME]
+    Installed 2 packages in [TIME]
+     + child1==0.1.0 (from file://[TEMP_DIR]/child1)
+     + iniconfig==2.0.0
+    "###);
+
+    let test_script = context.temp_dir.child("main.py");
+    test_script.write_str(indoc! { r"
+        import typing_extensions
+       "
+    })?;
+
+    uv_snapshot!(context.filters(), context.run().arg("main.py"), @r###"
+    success: false
+    exit_code: 1
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 8 packages in [TIME]
+    Audited 4 packages in [TIME]
+    Traceback (most recent call last):
+      File "[TEMP_DIR]/main.py", line 1, in <module>
+        import typing_extensions
+    ModuleNotFoundError: No module named 'typing_extensions'
+    "###);
+
+    uv_snapshot!(context.filters(), context.run().arg("--all-packages").arg("main.py"), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    Resolved 8 packages in [TIME]
+    Prepared 2 packages in [TIME]
+    Installed 2 packages in [TIME]
+     + child2==0.1.0 (from file://[TEMP_DIR]/child2)
+     + typing-extensions==4.10.0
+    "###);
+
+    Ok(())
+}
+
 #[test]
 fn run_with_editable() -> Result<()> {
     let context = TestContext::new("3.12");
@@ -1674,7 +1837,7 @@ fn run_editable() -> Result<()> {
 
 #[test]
 fn run_from_directory() -> Result<()> {
-    // default 3.11 so that the .python-version is meaningful
+    // Default to 3.11 so that the `.python-version` is meaningful.
     let context = TestContext::new_with_versions(&["3.10", "3.11", "3.12"]);
 
     let project_dir = context.temp_dir.child("project");
@@ -1745,6 +1908,7 @@ fn run_from_directory() -> Result<()> {
      + foo==1.0.0 (from file://[TEMP_DIR]/project)
     "###);
 
+    fs_err::remove_dir_all(context.temp_dir.join("project").join(".venv"))?;
     uv_snapshot!(filters.clone(), context.run().arg("--project").arg("project").arg("./project/main.py"), @r###"
     success: true
     exit_code: 0
@@ -1752,11 +1916,15 @@ fn run_from_directory() -> Result<()> {
 
     ----- stderr -----
     warning: `VIRTUAL_ENV=.venv` does not match the project environment path `[PROJECT_VENV]/` and will be ignored
+    Using CPython 3.12.[X] interpreter at: [PYTHON-3.12]
+    Creating virtual environment at: [PROJECT_VENV]/
     Resolved 1 package in [TIME]
-    Audited 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + foo==1.0.0 (from file://[TEMP_DIR]/project)
     "###);
 
     // Use `--directory`, which switches to the provided directory entirely.
+    fs_err::remove_dir_all(context.temp_dir.join("project").join(".venv"))?;
     uv_snapshot!(filters.clone(), context.run().arg("--directory").arg("project").arg("main"), @r###"
     success: true
     exit_code: 0
@@ -1765,10 +1933,14 @@ fn run_from_directory() -> Result<()> {
 
     ----- stderr -----
     warning: `VIRTUAL_ENV=[VENV]/` does not match the project environment path `.venv` and will be ignored
+    Using CPython 3.12.[X] interpreter at: [PYTHON-3.12]
+    Creating virtual environment at: .venv
     Resolved 1 package in [TIME]
-    Audited 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + foo==1.0.0 (from file://[TEMP_DIR]/project)
     "###);
 
+    fs_err::remove_dir_all(context.temp_dir.join("project").join(".venv"))?;
     uv_snapshot!(filters.clone(), context.run().arg("--directory").arg("project").arg("./main.py"), @r###"
     success: true
     exit_code: 0
@@ -1776,10 +1948,14 @@ fn run_from_directory() -> Result<()> {
 
     ----- stderr -----
     warning: `VIRTUAL_ENV=[VENV]/` does not match the project environment path `.venv` and will be ignored
+    Using CPython 3.12.[X] interpreter at: [PYTHON-3.12]
+    Creating virtual environment at: .venv
     Resolved 1 package in [TIME]
-    Audited 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + foo==1.0.0 (from file://[TEMP_DIR]/project)
     "###);
 
+    fs_err::remove_dir_all(context.temp_dir.join("project").join(".venv"))?;
     uv_snapshot!(filters.clone(), context.run().arg("--directory").arg("project").arg("./project/main.py"), @r###"
     success: false
     exit_code: 2
@@ -1787,8 +1963,11 @@ fn run_from_directory() -> Result<()> {
 
     ----- stderr -----
     warning: `VIRTUAL_ENV=[VENV]/` does not match the project environment path `.venv` and will be ignored
+    Using CPython 3.12.[X] interpreter at: [PYTHON-3.12]
+    Creating virtual environment at: .venv
     Resolved 1 package in [TIME]
-    Audited 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + foo==1.0.0 (from file://[TEMP_DIR]/project)
     error: Failed to spawn: `./project/main.py`
       Caused by: No such file or directory (os error 2)
     "###);
@@ -1804,6 +1983,7 @@ fn run_from_directory() -> Result<()> {
         .child(PYTHON_VERSION_FILENAME)
         .write_str("3.10")?;
 
+    fs_err::remove_dir_all(context.temp_dir.join("project").join(".venv"))?;
     uv_snapshot!(filters.clone(), context.run().arg("--project").arg("project").arg("main"), @r###"
     success: true
     exit_code: 0
@@ -1813,13 +1993,13 @@ fn run_from_directory() -> Result<()> {
     ----- stderr -----
     warning: `VIRTUAL_ENV=.venv` does not match the project environment path `[PROJECT_VENV]/` and will be ignored
     Using CPython 3.10.[X] interpreter at: [PYTHON-3.10]
-    Removed virtual environment at: [PROJECT_VENV]/
     Creating virtual environment at: [PROJECT_VENV]/
     Resolved 1 package in [TIME]
     Installed 1 package in [TIME]
      + foo==1.0.0 (from file://[TEMP_DIR]/project)
     "###);
 
+    fs_err::remove_dir_all(context.temp_dir.join("project").join(".venv"))?;
     uv_snapshot!(filters.clone(), context.run().arg("--directory").arg("project").arg("main"), @r###"
     success: true
     exit_code: 0
@@ -1828,8 +2008,11 @@ fn run_from_directory() -> Result<()> {
 
     ----- stderr -----
     warning: `VIRTUAL_ENV=[VENV]/` does not match the project environment path `.venv` and will be ignored
+    Using CPython 3.10.[X] interpreter at: [PYTHON-3.10]
+    Creating virtual environment at: .venv
     Resolved 1 package in [TIME]
-    Audited 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + foo==1.0.0 (from file://[TEMP_DIR]/project)
     "###);
 
     Ok(())

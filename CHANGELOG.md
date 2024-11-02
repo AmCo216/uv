@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.4.29
+
+### Enhancements
+
+- Sort errors during display in `uv python install` ([#8684](https://github.com/astral-sh/uv/pull/8684))
+- Update resolver to use disjointness checks instead of marker equality ([#8661](https://github.com/astral-sh/uv/pull/8661))
+- Add `riscv64` to supported Python platform tags ([#8660](https://github.com/astral-sh/uv/pull/8660))
+
+### Bug fixes
+
+- Fix hard and soft float libc detection for managed Python distributions on ARM ([#8498](https://github.com/astral-sh/uv/pull/8498))
+- Handle cycles in `uv pip tree` ([#8689](https://github.com/astral-sh/uv/pull/8689))
+- Respect dependency group markers in `uv export` ([#8659](https://github.com/astral-sh/uv/pull/8659))
+- Support transitive dependencies in Git workspaces ([#8665](https://github.com/astral-sh/uv/pull/8665))
+- Use portable paths for subdirectories in lock URLs ([#8707](https://github.com/astral-sh/uv/pull/8707))
+- Update `uv init --virtual` to imply `--no-package` ([#8595](https://github.com/astral-sh/uv/pull/8595))
+
+### Preview
+
+- Install versioned Python executables into the bin directory during `uv python install` (Unix only) ([#8458](https://github.com/astral-sh/uv/pull/8458))
+
+### Documentation
+
+- Clarify relationship between specifiers and `requires-python` range ([#8688](https://github.com/astral-sh/uv/pull/8688))
+- Fix broken link in docs ([#8552](https://github.com/astral-sh/uv/pull/8552))
+- Fix outdated documentation on `Requires-Python` ([#8679](https://github.com/astral-sh/uv/pull/8679))
+- Add Google Artifact Registry index authentication guide ([#8579](https://github.com/astral-sh/uv/pull/8579))
+
+## 0.4.28
+
+### Enhancements
+
+- Add support for requesting free-threaded builds via `+freethreaded` ([#8645](https://github.com/astral-sh/uv/pull/8645))
+- Improve trusted publishing error messages ([#8633](https://github.com/astral-sh/uv/pull/8633))
+- Remove unneeded `return` from Maturin project template ([#8604](https://github.com/astral-sh/uv/pull/8604))
+- Skip Python interpreter discovery for `uv export` ([#8638](https://github.com/astral-sh/uv/pull/8638))
+- Hint about missing trusted publishing permission ([#8632](https://github.com/astral-sh/uv/pull/8632))
+
+### Configuration
+
+- Add environment variable to disable progress output ([#8600](https://github.com/astral-sh/uv/pull/8600))
+
+### Bug fixes
+
+- Fork when minimum Python version increases ([#8628](https://github.com/astral-sh/uv/pull/8628))
+- Ignore empty groups when validating lock ([#8598](https://github.com/astral-sh/uv/pull/8598))
+- Remove duplicate word in error message ([#8589](https://github.com/astral-sh/uv/pull/8589))
+- Support cyclic dependencies in `uv tree` ([#8564](https://github.com/astral-sh/uv/pull/8564))
+- Update `uv init` to imply `--package` when using `--build-backend` ([#8593](https://github.com/astral-sh/uv/pull/8593))
+- Restore use of `dev-dependencies` and `requires-dev` for lockfile compatibility ([#8599](https://github.com/astral-sh/uv/pull/8599))
+
+### Documentation
+
+- Clarify `requires-python` requirement for dependencies ([#8619](https://github.com/astral-sh/uv/pull/8619))
+- Update CLI documentation for `--cache-dir` ([#8627](https://github.com/astral-sh/uv/pull/8627))
+
 ## 0.4.27
 
 This release includes support for the `[dependency-groups]` table as recently standardized in [PEP 735](https://peps.python.org/pep-0735/). The table allows for declaration of optional dependency groups that are not published as part of the package metadata, unlike `[project.optional-dependencies]`. There are new `--group`, `--only-group`, and `--no-group` options throughout the uv interface.
